@@ -96,3 +96,124 @@ CREATE TABLE IF NOT EXISTS shifts (
     published  boolean NOT NULL DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS shifts_week_idx ON shifts (company_id, starts_at);
+
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id      bigint PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    mode         text NOT NULL DEFAULT 'system' CHECK (mode IN ('system', 'light', 'dark')),
+    scheme       text NOT NULL DEFAULT 'moss' CHECK (scheme IN ('moss', 'burgundy', 'navy', 'company', 'custom')),
+    custom_color text NOT NULL DEFAULT '#6f8f5e',
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS inventory_items (
+    id            bigserial PRIMARY KEY,
+    company_id    text NOT NULL REFERENCES companies (id),
+    sku           text NOT NULL,
+    name          text NOT NULL,
+    category      text NOT NULL,
+    location      text NOT NULL,
+    unit          text NOT NULL,
+    on_hand       int NOT NULL CHECK (on_hand >= 0),
+    reserved      int NOT NULL DEFAULT 0 CHECK (reserved >= 0),
+    reorder_point int NOT NULL,
+    reorder_qty   int NOT NULL,
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (company_id, sku)
+);
+
+CREATE TABLE IF NOT EXISTS shipments (
+    id           bigserial PRIMARY KEY,
+    company_id   text NOT NULL REFERENCES companies (id),
+    reference    text NOT NULL,
+    mode         text NOT NULL CHECK (mode IN ('sea', 'road', 'rail', 'air')),
+    status       text NOT NULL DEFAULT 'booked'
+                 CHECK (status IN ('booked', 'in_transit', 'delayed', 'delivered', 'cancelled')),
+    customer     text NOT NULL,
+    carrier      text NOT NULL,
+    origin       text NOT NULL,
+    destination  text NOT NULL,
+    weight_kg    int NOT NULL,
+    pieces       int NOT NULL,
+    priority     text NOT NULL DEFAULT 'standard' CHECK (priority IN ('standard', 'express')),
+    booked_at    timestamptz NOT NULL DEFAULT now(),
+    departs_at   timestamptz NOT NULL,
+    eta          timestamptz NOT NULL,
+    -- Simulated actual arrival. It can be later than the promised eta.
+    arrives_at   timestamptz NOT NULL,
+    departed_at  timestamptz,
+    delivered_at timestamptz,
+    checkpoint   boolean NOT NULL DEFAULT false,
+    item_id      bigint REFERENCES inventory_items (id) ON DELETE SET NULL,
+    quantity     int,
+    created_by   bigint REFERENCES users (id) ON DELETE SET NULL,
+    UNIQUE (company_id, reference)
+);
+CREATE INDEX IF NOT EXISTS shipments_list_idx ON shipments (company_id, id DESC);
+CREATE INDEX IF NOT EXISTS shipments_status_idx ON shipments (company_id, status);
+CREATE INDEX IF NOT EXISTS shipments_delivered_idx ON shipments (company_id, delivered_at) WHERE delivered_at IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS shipment_events (
+    id          bigserial PRIMARY KEY,
+    shipment_id bigint NOT NULL REFERENCES shipments (id) ON DELETE CASCADE,
+    at          timestamptz NOT NULL,
+    kind        text NOT NULL,
+    location    text NOT NULL,
+    note        text NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS shipment_events_idx ON shipment_events (shipment_id, at);
+
+CREATE TABLE IF NOT EXISTS realm_progress (
+    company_id text NOT NULL REFERENCES companies (id),
+    mode       text NOT NULL,
+    xp         int NOT NULL DEFAULT 0,
+    level      int NOT NULL DEFAULT 1,
+    PRIMARY KEY (company_id, mode)
+);
+
+CREATE TABLE IF NOT EXISTS milestones (
+    company_id  text NOT NULL REFERENCES companies (id),
+    key         text NOT NULL,
+    unlocked_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (company_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id         bigserial PRIMARY KEY,
+    user_id    bigint NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    kind       text NOT NULL,
+    title      text NOT NULL,
+    body       text NOT NULL DEFAULT '',
+    link       text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    read_at    timestamptz
+);
+CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications (user_id, id DESC);
+CREATE INDEX IF NOT EXISTS notifications_unread_idx ON notifications (user_id) WHERE read_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         bigserial PRIMARY KEY,
+    company_id text NOT NULL REFERENCES companies (id),
+    user_id    bigint REFERENCES users (id) ON DELETE SET NULL,
+    action     text NOT NULL,
+    target     text NOT NULL DEFAULT '',
+    detail     text NOT NULL DEFAULT '',
+    at         timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS audit_company_idx ON audit_log (company_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS time_off_requests (
+    id          bigserial PRIMARY KEY,
+    company_id  text NOT NULL REFERENCES companies (id),
+    user_id     bigint NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    kind        text NOT NULL CHECK (kind IN ('vacation', 'sick', 'personal')),
+    starts_on   date NOT NULL,
+    ends_on     date NOT NULL,
+    reason      text NOT NULL DEFAULT '',
+    status      text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied', 'withdrawn')),
+    decided_by  bigint REFERENCES users (id) ON DELETE SET NULL,
+    decided_at  timestamptz,
+    note        text NOT NULL DEFAULT '',
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    CHECK (ends_on >= starts_on)
+);
+CREATE INDEX IF NOT EXISTS time_off_company_idx ON time_off_requests (company_id, starts_on);

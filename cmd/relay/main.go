@@ -21,6 +21,7 @@ import (
 
 	"relay/internal/jobs"
 	"relay/internal/server"
+	"relay/internal/sim"
 	"relay/internal/store"
 	"relay/relay"
 )
@@ -99,15 +100,17 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	sm := sim.New(st, rt, log, companies)
 	if env("RELAY_AMBIENT", "on") != "off" {
 		go ambient(ctx, rt, companies, log)
+		go sm.Run(ctx)
 	}
 	go housekeeping(ctx, st, log)
 
 	addr := env("RELAY_ADDR", "localhost:8080")
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(st, rt, log),
+		Handler:           server.New(st, rt, sm, log),
 		ReadHeaderTimeout: 5 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}

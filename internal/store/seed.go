@@ -106,6 +106,9 @@ func (s *Store) Seed(ctx context.Context, now time.Time) error {
 		if err := s.seedSchedule(ctx, c, now); err != nil {
 			return fmt.Errorf("seed schedule for %s: %w", c.ID, err)
 		}
+		if err := s.seedOperations(ctx, c, now); err != nil {
+			return fmt.Errorf("seed operations for %s: %w", c.ID, err)
+		}
 	}
 	return nil
 }

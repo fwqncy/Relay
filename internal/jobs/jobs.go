@@ -37,6 +37,10 @@ var Catalog = []Kind{
 	{"dock.confirm", "Confirm dock appointment", "Confirms a requested slot with the carrier portal.", "system"},
 	{"dock.checkin", "Check in carrier", "Records a carrier’s arrival at the dock.", "system"},
 	{"shift.publish", "Publish shift", "Publishes a draft shift and notifies the employee.", "system"},
+	{"shipment.book", "Book shipment", "Confirms a booking with the carrier.", "system"},
+	{"tracking.sync", "Sync tracking", "Pulls the carrier’s latest scan and advances the shipment.", "system"},
+	{"inventory.pick", "Pick stock", "Picks units for an outbound order.", "system"},
+	{"inventory.reorder", "Reorder stock", "Books an inbound replenishment for a low item.", "system"},
 }
 
 func Lookup(typ string) (Kind, bool) {
@@ -59,15 +63,19 @@ var hubs = map[string]point{
 // Handlers returns the handler for every job type.
 func Handlers(st *store.Store) map[string]relay.Handler {
 	return map[string]relay.Handler{
-		"route.optimize": routeOptimize,
-		"eta.recompute":  etaRecompute,
-		"label.print":    labelPrint,
-		"notify.driver":  notifyDriver,
-		"pod.upload":     podUpload,
-		"invoice.sync":   invoiceSync,
-		"dock.confirm":   advance(st, "requested", "confirmed", 15, 40),
-		"dock.checkin":   advance(st, "confirmed", "checked_in", 5, 15),
-		"shift.publish":  shiftPublish(st),
+		"route.optimize":    routeOptimize,
+		"eta.recompute":     etaRecompute,
+		"label.print":       labelPrint,
+		"notify.driver":     notifyDriver,
+		"pod.upload":        podUpload,
+		"invoice.sync":      invoiceSync,
+		"dock.confirm":      advance(st, "requested", "confirmed", 15, 40),
+		"dock.checkin":      advance(st, "confirmed", "checked_in", 5, 15),
+		"shift.publish":     shiftPublish(st),
+		"shipment.book":     shipmentBook(st),
+		"tracking.sync":     trackingSync(st),
+		"inventory.pick":    inventoryPick(st),
+		"inventory.reorder": inventoryReorder(st),
 	}
 }
 

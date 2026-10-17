@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en" data-mode="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Relay</title>
+    <meta name="description" content="Relay — a concurrent, work-stealing job runtime and logistics workspace." />
+    <meta name="theme-color" content="#151a16" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      // Apply the saved mode and colour scheme before first paint.
+      (function () {
+        try {
+          var s = JSON.parse(localStorage.getItem('relay-appearance') || '{}');
+          var mode = s.mode || 'system';
+          var dark = mode === 'dark' || (mode !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+          var root = document.documentElement;
+          root.dataset.mode = dark ? 'dark' : 'light';
+          if (s.vars) for (var k in s.vars) root.style.setProperty(k, s.vars[k]);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

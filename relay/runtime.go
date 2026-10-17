@@ -56,10 +56,10 @@ type Runtime struct {
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 
-	statMu  sync.Mutex
-	wstats  []WorkerStats
+	statMu   sync.Mutex
+	wstats   []WorkerStats
 	lastBusy []int64
-	lastAt  time.Time
+	lastAt   time.Time
 }
 
 func New(rdb *redis.Client, store Store, handlers map[string]Handler, cfg Config, log *slog.Logger) *Runtime {

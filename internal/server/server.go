@@ -19,11 +19,15 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"relay/internal/jobs"
+	"relay/internal/sim"
 	"relay/internal/store"
 	"relay/relay"
 )
 
-//go:embed web
+// dist holds the built web app (web/ → npm run build). It only contains a
+// placeholder until the frontend has been built.
+//
+//go:embed all:dist
 var webFS embed.FS
 
 const (
@@ -34,14 +38,15 @@ const (
 type Server struct {
 	st  *store.Store
 	rt  *relay.Runtime
+	sim *sim.Sim
 	log *slog.Logger
 	mux *http.ServeMux
 	// dummyHash keeps login timing the same for unknown emails.
 	dummyHash []byte
 }
 
-func New(st *store.Store, rt *relay.Runtime, log *slog.Logger) http.Handler {
-	s := &Server{st: st, rt: rt, log: log, mux: http.NewServeMux()}
+func New(st *store.Store, rt *relay.Runtime, sm *sim.Sim, log *slog.Logger) http.Handler {
+	s := &Server{st: st, rt: rt, sim: sm, log: log, mux: http.NewServeMux()}
 	s.dummyHash, _ = bcrypt.GenerateFromPassword([]byte("not-a-real-password"), bcrypt.DefaultCost)
 
 	s.mux.HandleFunc("GET /api/demo-accounts", s.demoAccounts)
@@ -49,6 +54,7 @@ func New(st *store.Store, rt *relay.Runtime, log *slog.Logger) http.Handler {
 	s.mux.HandleFunc("POST /api/logout", s.logout)
 
 	s.mux.HandleFunc("GET /api/me", s.auth(s.me))
+	s.mux.HandleFunc("GET /api/session", s.session)
 	s.mux.HandleFunc("GET /api/runtime", s.auth(s.runtime))
 	s.mux.HandleFunc("GET /api/stream", s.auth(s.stream))
 	s.mux.HandleFunc("PUT /api/runtime/mode", s.manager(s.setMode))
@@ -70,6 +76,8 @@ func New(st *store.Store, rt *relay.Runtime, log *slog.Logger) http.Handler {
 	s.mux.HandleFunc("DELETE /api/shifts/{id}", s.manager(s.deleteShift))
 	s.mux.HandleFunc("POST /api/shifts/publish", s.manager(s.publishShifts))
 
+	s.opsRoutes()
+
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "No such endpoint.")
 	})
@@ -90,15 +98,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) static() http.Handler {
-	sub, _ := fs.Sub(webFS, "web")
+	sub, _ := fs.Sub(webFS, "dist")
 	files := http.FileServerFS(sub)
-	index, _ := fs.ReadFile(sub, "index.html")
+	index, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		index = []byte(`<!doctype html><meta charset="utf-8"><title>Relay</title>
+<body style="font:16px system-ui;padding:40px;max-width:560px;margin:auto">
+<h1>The web app hasn’t been built yet</h1>
+<p>Run <code>make web</code> (or <code>cd web && npm install && npm run build</code>), then restart the server.
+The API is already running at <code>/api</code>.</p></body>`)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache")
 		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			// Vite fingerprints asset names, so they can be cached forever.
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			files.ServeHTTP(w, r)
 			return
 		}
+		if f, err := fs.Stat(sub, strings.TrimPrefix(r.URL.Path, "/")); err == nil && !f.IsDir() {
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+			files.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(index)
 	})
@@ -240,6 +262,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	_ = s.st.Audit(r.Context(), u.CompanyID, &u.ID, "auth.login", u.Email, "")
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: token, Path: "/", HttpOnly: true, Secure: r.TLS != nil,
 		SameSite: http.SameSiteLaxMode, MaxAge: int(sessionTTL.Seconds()),
@@ -255,6 +278,22 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// session is /api/me for pages that work signed out: it returns null
+// instead of a 401 when there is no session.
+func (s *Server) session(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie(cookieName)
+	if err != nil {
+		writeJSON(w, http.StatusOK, nil)
+		return
+	}
+	u, err := s.st.SessionUser(r.Context(), c.Value)
+	if err != nil {
+		writeJSON(w, http.StatusOK, nil)
+		return
+	}
+	s.me(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, u)))
+}
+
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
 	c, err := s.st.Company(r.Context(), u.CompanyID)
@@ -268,7 +307,12 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 			kinds = append(kinds, k)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"user": u, "company": c, "jobKinds": kinds, "allKinds": jobs.Catalog})
+	settings, err := s.st.Settings(r.Context(), u.ID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": u, "company": c, "jobKinds": kinds, "allKinds": jobs.Catalog, "settings": settings})
 }
 
 // ---- runtime ----
@@ -314,6 +358,9 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	defer tick.Stop()
 	for {
 		msg := map[string]any{"mode": s.rt.Mode()}
+		if n, err := s.st.UnreadCount(r.Context(), u.ID); err == nil {
+			msg["unread"] = n
+		}
 		if p, ok := s.rt.Metrics.Latest(u.CompanyID); ok {
 			msg["point"] = p
 		}
@@ -348,6 +395,7 @@ func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("mode changed", "by", userFrom(r).Email, "mode", in.Mode)
+	s.audit(r, "runtime.mode", string(in.Mode), "")
 	writeJSON(w, http.StatusOK, map[string]any{"mode": s.rt.Mode(), "changes": s.rt.ModeChanges()})
 }
 
@@ -370,6 +418,7 @@ func (s *Server) burst(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.audit(r, "runtime.burst", fmt.Sprintf("%d jobs", in.Jobs), string(s.rt.Mode()))
 	writeJSON(w, http.StatusAccepted, map[string]any{"runId": runID, "jobs": in.Jobs, "mode": s.rt.Mode()})
 }
 
@@ -484,6 +533,7 @@ func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.audit(r, "job.retry", fmt.Sprintf("#%d", j.ID), j.Type)
 	writeJSON(w, http.StatusAccepted, map[string]any{"jobId": j.ID})
 }
 
@@ -554,6 +604,7 @@ func (s *Server) createAppointment(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, err)
 			return
 		}
+		s.audit(r, "appointment.create", in.Reference, in.Carrier)
 		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "jobId": jobID})
 	}
 }
@@ -587,6 +638,7 @@ func (s *Server) appointmentJob(w http.ResponseWriter, r *http.Request, typ, wan
 		s.fail(w, err)
 		return
 	}
+	s.audit(r, "appointment."+strings.TrimPrefix(typ, "dock."), a.Reference, a.Carrier)
 	writeJSON(w, http.StatusAccepted, map[string]any{"jobId": jobID})
 }
 
@@ -616,6 +668,7 @@ func (s *Server) completeAppointment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Only checked-in appointments can be completed.")
 		return
 	}
+	s.audit(r, "appointment.complete", fmt.Sprintf("#%d", id), "")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -647,7 +700,12 @@ func (s *Server) shifts(w http.ResponseWriter, r *http.Request) {
 		}
 		list = visible
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"staff": staff, "shifts": list})
+	off, err := s.st.TimeOff(r.Context(), store.TimeOffFilter{Company: u.CompanyID, Status: "approved", From: from, To: to})
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"staff": staff, "shifts": list, "timeOff": off})
 }
 
 func (s *Server) createShift(w http.ResponseWriter, r *http.Request) {
@@ -677,6 +735,7 @@ func (s *Server) createShift(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, err)
 			return
 		}
+		s.audit(r, "shift.create", fmt.Sprintf("#%d", id), in.Position)
 		writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 	}
 }
@@ -690,6 +749,7 @@ func (s *Server) deleteShift(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.audit(r, "shift.delete", fmt.Sprintf("#%d", id), "")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -718,5 +778,6 @@ func (s *Server) publishShifts(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.audit(r, "shift.publish", fmt.Sprintf("%d shifts", len(jobIDs)), in.From.Format(time.DateOnly))
 	writeJSON(w, http.StatusAccepted, map[string]any{"jobs": len(jobIDs), "jobIds": jobIDs})
 }
